@@ -14,9 +14,16 @@ All strategies are based on European options and assume expiration at maturity.
 
 import numpy as np
 import matplotlib.pyplot as plt
+import seaborn as sns
 import os
 import math
 from typing import Tuple, Optional, List
+
+# Set Seaborn style for beautiful plots
+sns.set_style("whitegrid")
+sns.set_palette("husl")
+plt.rcParams['figure.facecolor'] = 'white'
+plt.rcParams['axes.facecolor'] = 'white'
 
 
 class OptionStrategies:
@@ -93,7 +100,7 @@ class OptionStrategies:
     def _plot_strategy(self, S: np.ndarray, payoff: np.ndarray, profit: np.ndarray,
                       strategy_name: str, strikes: List[float], premiums: Optional[float] = None):
         """
-        Create and save plots for a strategy showing both payoff and profit.
+        Create and save beautiful plots using Seaborn styling for a strategy showing both payoff and profit.
         
         Parameters:
         -----------
@@ -110,45 +117,118 @@ class OptionStrategies:
         premiums : float, optional
             Net premium paid/received (for annotation)
         """
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+        # Create figure with Seaborn styling
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 7))
+        fig.patch.set_facecolor('white')
         
-        # Payoff plot
-        ax1.plot(S, payoff, linewidth=2, color='steelblue', label='Payoff')
-        ax1.axhline(0, color='black', linestyle='-', linewidth=0.5)
-        ax1.axvline(0, color='black', linestyle='-', linewidth=0.5)
-        for K in strikes:
-            ax1.axvline(K, color='orange', linestyle='--', linewidth=1, alpha=0.7)
-            ax1.text(K, ax1.get_ylim()[0] * 0.05, f'K={K}', ha='center', va='bottom', 
-                    rotation=90, fontsize=8)
-        ax1.set_xlabel('Underlying Asset Price ($S_T$)', fontsize=12)
-        ax1.set_ylabel('Payoff', fontsize=12)
-        ax1.set_title(f'{strategy_name} - Payoff Diagram', fontsize=14, fontweight='bold')
-        ax1.grid(True, alpha=0.3)
-        ax1.legend()
+        # Beautiful color palette - modern and professional
+        colors = sns.color_palette("husl", 8)
+        payoff_color = colors[0]  # Beautiful blue/teal for payoff fill areas
+        line_color = '#000000'  # Black for all lines (payoff and profit)
+        profit_fill_color = '#2D5016'  # Dark green for profit zone
+        loss_fill_color = '#E63946'  # Nice red for loss zone
+        strike_color = sns.color_palette("Set2")[1]  # Orange from Set2 palette
         
-        # Profit plot
-        ax2.plot(S, profit, linewidth=2, color='green', label='Profit')
-        ax2.axhline(0, color='black', linestyle='-', linewidth=0.5)
-        ax2.axvline(0, color='black', linestyle='-', linewidth=0.5)
-        for K in strikes:
-            ax2.axvline(K, color='orange', linestyle='--', linewidth=1, alpha=0.7)
-            ax2.text(K, ax2.get_ylim()[0] * 0.05, f'K={K}', ha='center', va='bottom', 
-                    rotation=90, fontsize=8)
+        # ========== PAYOFF PLOT ==========
+        # Fill areas above and below zero for better visualization
+        ax1.fill_between(S, 0, payoff, where=(payoff >= 0), 
+                         alpha=0.3, color=payoff_color, label='Positive Payoff')
+        ax1.fill_between(S, 0, payoff, where=(payoff < 0), 
+                         alpha=0.3, color=loss_fill_color, label='Negative Payoff')
+        
+        # Plot payoff line in black
+        ax1.plot(S, payoff, linewidth=3, color=line_color, 
+                label='Payoff', zorder=5, antialiased=True)
+        
+        # Zero reference lines
+        ax1.axhline(0, color='gray', linestyle='-', linewidth=1.5, alpha=0.6, zorder=1)
+        ax1.axvline(0, color='gray', linestyle='-', linewidth=1.5, alpha=0.6, zorder=1)
+        
+        # Strike price lines with better styling - avoid overlapping labels
+        y_min, y_max = ax1.get_ylim()
+        y_range = y_max - y_min
+        for i, K in enumerate(strikes):
+            ax1.axvline(K, color=strike_color, linestyle='--', linewidth=2.5, 
+                       alpha=0.8, zorder=2, dashes=(5, 5))
+            # Position labels alternately above and below to avoid overlap
+            # Alternate between top and bottom positions
+            if i % 2 == 0:
+                y_pos = y_min + y_range * 0.05  # Bottom position
+                va = 'bottom'
+            else:
+                y_pos = y_max - y_range * 0.05  # Top position
+                va = 'top'
+            ax1.text(K, y_pos, f'K{i+1}={K:.0f}', ha='center', va=va, 
+                    rotation=0, fontsize=10, fontweight='bold',
+                    bbox=dict(boxstyle='round,pad=0.4', facecolor='white', 
+                             edgecolor=strike_color, linewidth=2, alpha=0.95),
+                    zorder=6, color='#2C3E50')
+        
+        # Styling with Seaborn
+        ax1.set_xlabel('Underlying Asset Price ($S_T$)', fontsize=13, fontweight='bold')
+        ax1.set_ylabel('Payoff', fontsize=13, fontweight='bold')
+        ax1.set_title(f'{strategy_name}\nPayoff Diagram', fontsize=15, fontweight='bold', pad=15)
+        ax1.legend(loc='best', frameon=True, fancybox=True, shadow=True, fontsize=10)
+        sns.despine(ax=ax1, left=False, bottom=False)
+        
+        # ========== PROFIT PLOT ==========
+        # Fill profit and loss areas
+        ax2.fill_between(S, 0, profit, where=(profit >= 0), 
+                         alpha=0.35, color=profit_fill_color, label='Profit Zone')
+        ax2.fill_between(S, 0, profit, where=(profit < 0), 
+                         alpha=0.35, color=loss_fill_color, label='Loss Zone')
+        
+        # Plot profit line in black
+        ax2.plot(S, profit, linewidth=3, color=line_color, 
+                label='Profit/Loss', zorder=5, antialiased=True)
+        
+        # Zero reference lines
+        ax2.axhline(0, color='gray', linestyle='-', linewidth=1.5, alpha=0.6, zorder=1)
+        ax2.axvline(0, color='gray', linestyle='-', linewidth=1.5, alpha=0.6, zorder=1)
+        
+        # Strike price lines - avoid overlapping labels
+        y_min, y_max = ax2.get_ylim()
+        y_range = y_max - y_min
+        for i, K in enumerate(strikes):
+            ax2.axvline(K, color=strike_color, linestyle='--', linewidth=2.5, 
+                       alpha=0.8, zorder=2, dashes=(5, 5))
+            # Position labels alternately above and below to avoid overlap
+            # Use opposite pattern from payoff plot for variety
+            if i % 2 == 0:
+                y_pos = y_max - y_range * 0.05  # Top position
+                va = 'top'
+            else:
+                y_pos = y_min + y_range * 0.05  # Bottom position
+                va = 'bottom'
+            ax2.text(K, y_pos, f'K{i+1}={K:.0f}', ha='center', va=va, 
+                    rotation=0, fontsize=10, fontweight='bold',
+                    bbox=dict(boxstyle='round,pad=0.4', facecolor='white', 
+                             edgecolor=strike_color, linewidth=2, alpha=0.95),
+                    zorder=6, color='#2C3E50')
+        
+        # Premium annotation with Seaborn styling
         if premiums is not None:
-            ax2.text(0.02, 0.98, f'Net Premium: {premiums:.2f}', 
-                    transform=ax2.transAxes, fontsize=10,
-                    verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
-        ax2.set_xlabel('Underlying Asset Price ($S_T$)', fontsize=12)
-        ax2.set_ylabel('Profit/Loss', fontsize=12)
-        ax2.set_title(f'{strategy_name} - Profit Diagram', fontsize=14, fontweight='bold')
-        ax2.grid(True, alpha=0.3)
-        ax2.legend()
+            premium_text = f'Net Premium: {premiums:+.2f}'
+            premium_color = profit_fill_color if premiums < 0 else loss_fill_color
+            ax2.text(0.02, 0.98, premium_text, 
+                    transform=ax2.transAxes, fontsize=11, fontweight='bold',
+                    verticalalignment='top', 
+                    bbox=dict(boxstyle='round,pad=0.6', facecolor='white', 
+                             edgecolor=premium_color, linewidth=2.5, alpha=0.95),
+                    color='#2C3E50', zorder=7)
+        
+        # Styling with Seaborn
+        ax2.set_xlabel('Underlying Asset Price ($S_T$)', fontsize=13, fontweight='bold')
+        ax2.set_ylabel('Profit/Loss', fontsize=13, fontweight='bold')
+        ax2.set_title(f'{strategy_name}\nProfit Diagram', fontsize=15, fontweight='bold', pad=15)
+        ax2.legend(loc='best', frameon=True, fancybox=True, shadow=True, fontsize=10)
+        sns.despine(ax=ax2, left=False, bottom=False)
         
         plt.tight_layout()
         
-        # Save plot
-        filename = f"{self.plot_dir}/{strategy_name.lower().replace(' ', '_')}.png"
-        plt.savefig(filename, dpi=300, bbox_inches='tight')
+        # Save plot with high quality
+        filename = f"{self.plot_dir}/{strategy_name.lower().replace(' ', '_').replace('×', 'x')}.png"
+        plt.savefig(filename, dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
         plt.close()
         
         print(f"Plot saved to: {filename}")
