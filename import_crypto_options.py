@@ -1,5 +1,5 @@
 """
-import_derebit.py — Import BTC and ETH options data from Deribit API
+import_crypto_options.py — Import BTC and ETH options data from Deribit API
 
 This module fetches options data for BTC and ETH from Deribit, filters by
 maturity range, and exports to CSV in the "data" folder.
