@@ -247,6 +247,75 @@ def import_options_data(
     ...     datetime(2024, 12, 31)
     ... )
     """
+    # Ensure output_dir is relative to the project root directory (Option_Pricing)
+    # This ensures data is always saved/loaded from the project's data/ folder,
+    # not from Documents or other locations
+    if not os.path.isabs(output_dir):
+        # Try to get the script's directory first (works when imported as module)
+        script_dir = None
+        try:
+            # Get the absolute path of this file
+            file_path = os.path.abspath(__file__)
+            script_dir = os.path.dirname(file_path)
+            # Verify that import_crypto_options.py exists in this directory
+            if not os.path.exists(os.path.join(script_dir, "import_crypto_options.py")):
+                script_dir = None
+        except NameError:
+            # __file__ not available (e.g., in Jupyter notebook)
+            pass
+        
+        # If we couldn't get it from __file__, search from current directory
+        if script_dir is None:
+            script_dir = os.getcwd()
+            # Check if we're already in the project root (has import_crypto_options.py)
+            if not os.path.exists(os.path.join(script_dir, "import_crypto_options.py")):
+                # Try to find the project root by looking for the file
+                current = script_dir
+                for _ in range(10):  # Go up max 10 levels
+                    test_path = os.path.join(current, "import_crypto_options.py")
+                    if os.path.exists(test_path):
+                        script_dir = current
+                        break
+                    parent = os.path.dirname(current)
+                    if parent == current:  # Reached filesystem root
+                        break
+                    current = parent
+        
+        # Final verification: ensure we're in the Option_Pricing directory
+        # If script_dir contains "Option_Pricing", make sure we use the Option_Pricing directory itself
+        if script_dir and "Option_Pricing" in script_dir:
+            # Split the path and find Option_Pricing
+            parts = script_dir.split(os.sep)
+            if "Option_Pricing" in parts:
+                # Find the index of Option_Pricing
+                option_pricing_idx = None
+                for i, part in enumerate(parts):
+                    if part == "Option_Pricing":
+                        option_pricing_idx = i
+                        break
+                if option_pricing_idx is not None:
+                    # Reconstruct path up to and including Option_Pricing
+                    script_dir = os.sep.join(parts[:option_pricing_idx + 1])
+        
+        # Build the final output directory
+        if script_dir:
+            output_dir = os.path.join(script_dir, output_dir)
+        else:
+            # Fallback: use current directory (shouldn't happen, but safer)
+            output_dir = os.path.join(os.getcwd(), output_dir)
+            print(f"⚠️  Warning: Could not find project root, using current directory: {os.getcwd()}")
+    
+    # Normalize the path (resolve any .. or . components)
+    output_dir = os.path.normpath(output_dir)
+    
+    # Verify the final path contains "Option_Pricing"
+    if "Option_Pricing" not in output_dir:
+        print(f"⚠️  Warning: Data directory path doesn't contain 'Option_Pricing': {output_dir}")
+        print(f"   Expected path should contain: .../Option_Pricing/data/")
+    
+    # Confirm the data directory path
+    print(f"📁 Data will be saved/loaded from: {output_dir}")
+    
     # Parse dates
     if isinstance(start_date, str):
         start_date = datetime.strptime(start_date, "%Y-%m-%d").date()
@@ -427,6 +496,7 @@ def import_options_data(
     
     # Export to CSV (separate files for each currency)
     os.makedirs(output_dir, exist_ok=True)
+    print(f"📁 Saving data to: {output_dir}")
     
     if filename is None:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -450,8 +520,8 @@ if __name__ == "__main__":
     # Example usage
     from datetime import datetime, timedelta
     
-    # Import options expiring in the next 3 months
-    end_date = datetime.now() + timedelta(days=90)
+    # Import options expiring in the next 12 months
+    end_date = datetime.now() + timedelta(days=365)
     start_date = datetime.now()
     
     dfs = import_options_data(
