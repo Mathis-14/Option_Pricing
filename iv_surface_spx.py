@@ -141,9 +141,17 @@ class SPXIVSurface:
 
         x_min, x_max = np.nanpercentile(x, [1, 99])
 
+        # Utiliser les limites réelles des données pour éviter l'extrapolation excessive
+        # mais respecter min_T et max_T comme limites maximales si définis
+        t_data_min, t_data_max = np.nanmin(t), np.nanmax(t)
+        
         if self.cfg.min_T is not None and self.cfg.max_T is not None:
-            t_min, t_max = self.cfg.min_T, self.cfg.max_T
+            # Utiliser les limites configurées, mais ne pas dépasser les données réelles
+            # pour éviter l'extrapolation dans des zones sans données
+            t_min = max(self.cfg.min_T, t_data_min)
+            t_max = min(self.cfg.max_T, t_data_max)
         else:
+            # Utiliser les percentiles des données réelles
             t_min, t_max = np.nanpercentile(t, [1, 99])
 
         X = np.linspace(x_min, x_max, self.cfg.grid_n)
