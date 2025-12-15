@@ -41,40 +41,82 @@ def _resolve_output_dir(output_dir: str) -> str:
         final_dir = output_dir
     else:
         # 1) Essayer d'utiliser le répertoire du fichier courant
+        script_dir = None
         try:
-            script_dir = os.path.dirname(os.path.abspath(__file__))
+            file_path = os.path.abspath(__file__)
+            script_dir = os.path.dirname(file_path)
+            # Verify that import_other_options.py exists in this directory
+            if not os.path.exists(os.path.join(script_dir, "import_other_options.py")):
+                script_dir = None
         except NameError:
-            # __file__ n'existe pas (par ex. dans un notebook)
-            script_dir = os.getcwd()
+            # __file__ not available (e.g., in Jupyter notebook)
+            pass
 
-        # 2) Si on est dans ou sous "Option_Pricing", on remonte jusqu'à lui
-        if "Option_Pricing" in script_dir:
+        # If we couldn't get it from __file__, search from current directory
+        if script_dir is None:
+            script_dir = os.getcwd()
+            # Check if we're already in the project root (has import_other_options.py)
+            if not os.path.exists(os.path.join(script_dir, "import_other_options.py")):
+                # Try to find the project root by looking for the file
+                current = script_dir
+                for _ in range(10):  # Go up max 10 levels
+                    test_path = os.path.join(current, "import_other_options.py")
+                    if os.path.exists(test_path):
+                        script_dir = current
+                        break
+                    parent = os.path.dirname(current)
+                    if parent == current:  # Reached filesystem root
+                        break
+                    current = parent
+
+        # Final verification: ensure we're in the Option_Pricing directory
+        # If script_dir contains "Option_Pricing", make sure we use the Option_Pricing directory itself
+        if script_dir and "Option_Pricing" in script_dir:
+            # Split the path and find Option_Pricing
             parts = script_dir.split(os.sep)
             if "Option_Pricing" in parts:
-                idx = parts.index("Option_Pricing")
-                project_root = os.sep.join(parts[: idx + 1])
-            else:
-                project_root = script_dir
+                # Find the index of Option_Pricing
+                option_pricing_idx = None
+                for i, part in enumerate(parts):
+                    if part == "Option_Pricing":
+                        option_pricing_idx = i
+                        break
+                if option_pricing_idx is not None:
+                    # Reconstruct path up to and including Option_Pricing
+                    script_dir = os.sep.join(parts[:option_pricing_idx + 1])
+
+        # Build the final output directory
+        if script_dir:
+            final_dir = os.path.join(script_dir, output_dir)
         else:
-            # Sinon, on essaie de remonter quelques niveaux pour trouver "Option_Pricing"
-            current = script_dir
-            project_root = script_dir
-            for _ in range(10):
-                if "Option_Pricing" in os.path.basename(current):
-                    project_root = current
-                    break
-                parent = os.path.dirname(current)
-                if parent == current:
-                    break
-                current = parent
+            # Fallback: use current directory (shouldn't happen, but safer)
+            final_dir = os.path.join(os.getcwd(), output_dir)
+            print(f"⚠️  Warning: Could not find project root, using current directory: {os.getcwd()}")
 
-        final_dir = os.path.join(project_root, output_dir)
-
+    # Normalize the path (resolve any .. or . components)
     final_dir = os.path.normpath(final_dir)
 
+    # Verify the final path contains "Option_Pricing"
     if "Option_Pricing" not in final_dir:
         print(f"⚠️  Warning: Data directory path doesn't contain 'Option_Pricing': {final_dir}")
-        print("    Expected path should look like: .../Option_Pricing/data/")
+        print(f"   Expected path should contain: .../Option_Pricing/data/")
+        print(f"   Current working directory: {os.getcwd()}")
+        
+        # Try to fix it by searching for Option_Pricing in the current path
+        cwd = os.getcwd()
+        if "Option_Pricing" in cwd:
+            parts = cwd.split(os.sep)
+            if "Option_Pricing" in parts:
+                option_pricing_idx = None
+                for i, part in enumerate(parts):
+                    if part == "Option_Pricing":
+                        option_pricing_idx = i
+                        break
+                if option_pricing_idx is not None:
+                    project_root = os.sep.join(parts[:option_pricing_idx + 1])
+                    final_dir = os.path.join(project_root, output_dir)
+                    final_dir = os.path.normpath(final_dir)
+                    print(f"   ✅ Fixed path to: {final_dir}")
 
     print(f"📁 Data will be saved to / loaded from: {final_dir}")
     return final_dir
@@ -136,6 +178,7 @@ def import_sp500_options_data(
     ticker: str = "^SPX",
     output_dir: str = "data",
     filename: Optional[str] = None,
+    filter_by_date: bool = True,
 ) -> pd.DataFrame:
     """
     Importe les options S&P 500 (ou autre sous-jacent Yahoo) via yfinance
@@ -163,6 +206,9 @@ def import_sp500_options_data(
         Dossier de sauvegarde (par défaut "data", à la racine du projet).
     filename : str, optionnel
         Nom de fichier (sans extension). Si None, un nom auto-généré sera utilisé.
+    filter_by_date : bool, default=True
+        Si True, filtre les options par date même lors du chargement d'un CSV existant.
+        Si False, charge toutes les options du CSV sans filtrage.
 
     Retour
     ------
@@ -199,15 +245,37 @@ def import_sp500_options_data(
     if existing_csv is not None:
         print(f"📂 Existing CSV found, loading instead of fetching from Yahoo Finance:\n   {existing_csv}")
         df = pd.read_csv(existing_csv)
-
+        
+        # Informations sur le CSV chargé
+        total_rows = len(df)
+        print(f"📊 Total rows in CSV: {total_rows}")
+        
         # S'assurer que expiry_date est bien en datetime
         if "expiry_date" in df.columns:
             df["expiry_date"] = pd.to_datetime(df["expiry_date"])
-
+        else:
+            print("⚠️  Warning: 'expiry_date' column not found in CSV")
+            return df
+        
+        # Filtrer par date si demandé
+        if filter_by_date:
+            df["expiry_date_only"] = df["expiry_date"].dt.date
+            before_filter = len(df)
+            df = df[(df["expiry_date_only"] >= start_date) & (df["expiry_date_only"] <= end_date)]
+            df = df.drop(columns=["expiry_date_only"])  # Nettoyer la colonne temporaire
+            
+            after_filter = len(df)
+            print(f"✅ Loaded {after_filter} options after filtering by date range ({start_date} to {end_date})")
+            if before_filter != after_filter:
+                print(f"   ({before_filter - after_filter} options filtered out)")
+        else:
+            print(f"✅ Loaded all {total_rows} options from CSV (no date filtering)")
+        
         return df
 
     # 🔄 2) Sinon : téléchargement depuis Yahoo Finance
     print(f"🔎 Fetching options from Yahoo Finance for ticker {ticker}...")
+    print(f"   Date range: {start_date} to {end_date}")
     tk = yf.Ticker(ticker)
 
     # Liste des maturités disponibles sur Yahoo
@@ -216,6 +284,8 @@ def import_sp500_options_data(
         print("⚠️  No option expirations available for this ticker.")
         return pd.DataFrame()
 
+    print(f"   Found {len(expirations)} expiration dates available")
+
     # Récupérer un prix du sous-jacent (close le plus récent)
     try:
         hist = tk.history(period="1d")
@@ -223,11 +293,13 @@ def import_sp500_options_data(
             underlying_price = None
         else:
             underlying_price = float(hist["Close"].iloc[-1])
+            print(f"   Underlying price: ${underlying_price:.2f}")
     except Exception as e:
         print(f"⚠️  Could not fetch underlying price: {e}")
         underlying_price = None
 
     all_rows = []
+    expirations_in_range = 0
 
     for exp_str in expirations:
         try:
@@ -239,6 +311,7 @@ def import_sp500_options_data(
         if not (start_date <= exp_date <= end_date):
             continue
 
+        expirations_in_range += 1
         print(f"  ⏱  Fetching option chain for expiry {exp_str}...")
         try:
             chain = tk.option_chain(exp_str)
@@ -256,6 +329,8 @@ def import_sp500_options_data(
             tmp["expiry_date"] = datetime.strptime(exp_str, "%Y-%m-%d")
             tmp["underlying_ticker"] = ticker
             all_rows.append(tmp)
+
+    print(f"   Processed {expirations_in_range} expiration dates in range")
 
     if not all_rows:
         print("⚠️  No options found in the requested expiry range.")
@@ -333,7 +408,7 @@ if __name__ == "__main__":
     from datetime import timedelta
 
     # Exemple : toutes les options qui expirent dans les 6 prochains mois
-    end = datetime.now().date() + timedelta(days=180)
+    end = datetime.now().date() + timedelta(days=720)
     start = datetime.now().date()
 
     df_spx = import_sp500_options_data(

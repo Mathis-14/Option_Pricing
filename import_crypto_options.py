@@ -1,27 +1,21 @@
 """
-import_crypto_options.py — Import BTC and ETH options data from Deribit API
+import_sp500_options_yahoo.py — Import S&P 500 options data from Yahoo Finance
 
-This module fetches options data for BTC and ETH from Deribit, filters by
-maturity range, and exports to CSV in the "data" folder.
+Ce module récupère les options sur un sous-jacent Yahoo Finance (par défaut ^SPX),
+filtre par maturité, et exporte un CSV dans le dossier "data" à la racine du projet.
 
-Usage:
-    from import_derebit import import_options_data
-    
-    # Import options with expiry between 2024-11-01 and 2024-12-31
-    # Returns a dictionary with separate DataFrames for BTC and ETH
-    dfs = import_options_data(
+Comportement :
+- S'il existe déjà un CSV correspondant dans `data/`, il est chargé directement.
+- Sinon, les données sont téléchargées depuis Yahoo Finance puis sauvegardées.
+
+Utilisation :
+    from import_other_options import import_sp500_options_data
+
+    # Importer les options avec expiration entre 2024-11-01 et 2024-12-31
+    df = import_sp500_options_data(
         start_date="2024-11-01",
         end_date="2024-12-31",
-        env="prod"
-    )
-    btc_df = dfs["BTC"]
-    eth_df = dfs["ETH"]
-    
-    # Or use datetime objects
-    from datetime import datetime
-    dfs = import_options_data(
-        start_date=datetime(2024, 11, 1),
-        end_date=datetime(2024, 12, 31)
+        ticker="^SPX",
     )
 """
 
@@ -29,515 +23,386 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, date
-from typing import Optional, Literal, Union
+from typing import Union, Optional
 
-import requests
 import pandas as pd
+import yfinance as yf
 
 
-def parse_expiry_date(expiry_str: str) -> Optional[datetime]:
+def _resolve_output_dir(output_dir: str) -> str:
     """
-    Parse expiry string like "29NOV24" into a datetime object.
-    
-    Parameters
-    ----------
-    expiry_str : str
-        Expiry string in format like "29NOV24" (DDMMMYY)
-    
-    Returns
-    -------
-    datetime or None
-        Parsed datetime object, or None if parsing fails
+    Résout le chemin du dossier data de manière robuste.
+    Toujours relatif au répertoire Option_Pricing du projet.
     """
-    try:
-        # Format: DDMMMYY (e.g., "29NOV24")
-        day = int(expiry_str[:2])
-        month_str = expiry_str[2:5].upper()
-        year = int(expiry_str[5:7])
-        
-        # Month mapping
-        month_map = {
-            "JAN": 1, "FEB": 2, "MAR": 3, "APR": 4,
-            "MAY": 5, "JUN": 6, "JUL": 7, "AUG": 8,
-            "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12
-        }
-        
-        month = month_map.get(month_str)
-        if month is None:
-            return None
-        
-        # Convert 2-digit year to 4-digit (assuming 20XX)
-        full_year = 2000 + year
-        
-        return datetime(full_year, month, day)
-    except (ValueError, KeyError, IndexError):
-        return None
-
-
-def fetch_options_data(
-    currency: str,
-    env: Literal["prod", "test"] = "prod"
-) -> list[dict]:
-    """
-    Fetch raw options data from Deribit API.
-    
-    Parameters
-    ----------
-    currency : str
-        Currency code: "BTC" or "ETH"
-    env : Literal["prod", "test"]
-        Environment: "prod" for live, "test" for testnet
-    
-    Returns
-    -------
-    list[dict]
-        List of raw option book entries from Deribit API
-    """
-    base_url = (
-        "https://www.deribit.com" if env == "prod"
-        else "https://test.deribit.com"
-    )
-    
-    url = f"{base_url}/api/v2/public/get_book_summary_by_currency"
-    params = {"currency": currency, "kind": "option"}
-    
-    resp = requests.get(url, params=params)
-    resp.raise_for_status()
-    payload = resp.json()
-    
-    return payload.get("result", [])
-
-
-def parse_option_name(name: str) -> Optional[dict]:
-    """
-    Parse option instrument name like: BTC-29NOV24-90000-C
-    
-    Returns
-    -------
-    dict with keys: currency, expiry, strike, type
-    or None if parsing fails
-    """
-    parts = name.split("-")
-    if len(parts) != 4:
-        return None
-    
-    currency, expiry_str, strike_str, opt_type = parts
-    
-    try:
-        strike = float(strike_str)
-    except ValueError:
-        return None
-    
-    if opt_type not in ("C", "P"):
-        return None
-    
-    expiry_date = parse_expiry_date(expiry_str)
-    
-    return {
-        "currency": currency,
-        "expiry_str": expiry_str,
-        "expiry_date": expiry_date,
-        "strike": strike,
-        "type": opt_type,
-    }
-
-
-def check_existing_csvs(
-    output_dir: str,
-    currencies: list[str]
-) -> dict[str, Optional[str]]:
-    """
-    Check if CSV files already exist for the given currencies.
-    
-    Returns
-    -------
-    dict[str, Optional[str]]
-        Dictionary mapping currency to the most recent CSV file path, or None if not found
-    """
-    existing_files = {}
-    
-    if not os.path.exists(output_dir):
-        return {currency: None for currency in currencies}
-    
-    for currency in currencies:
-        csv_files = [
-            f for f in os.listdir(output_dir)
-            if f.endswith(f'_{currency}.csv') and f.startswith('options_data_')
-        ]
-        
-        if csv_files:
-            # Sort by filename (which includes timestamp) and get the most recent
-            latest_file = sorted(csv_files)[-1]
-            existing_files[currency] = os.path.join(output_dir, latest_file)
-        else:
-            existing_files[currency] = None
-    
-    return existing_files
-
-
-def import_options_data(
-    start_date: Union[str, datetime, date],
-    end_date: Union[str, datetime, date],
-    currencies: Optional[list[str]] = None,
-    env: Literal["prod", "test"] = "prod",
-    output_dir: str = "data",
-    filename: Optional[str] = None,
-    force_new_import: bool = False,
-    auto_load_existing: bool = False
-) -> dict[str, pd.DataFrame]:
-    """
-    Import BTC and ETH options data from Deribit for a given maturity range.
-    Returns separate DataFrames for each currency.
-    
-    Parameters
-    ----------
-    start_date : str, datetime, or date
-        Start date for maturity filter (inclusive). Can be string like "2024-11-01"
-        or datetime/date object.
-    end_date : str, datetime, or date
-        End date for maturity filter (inclusive). Can be string like "2024-12-31"
-        or datetime/date object.
-    currencies : list[str], optional
-        List of currencies to fetch. Defaults to ["BTC", "ETH"].
-    env : Literal["prod", "test"]
-        Environment: "prod" for live, "test" for testnet. Defaults to "prod".
-    output_dir : str
-        Directory to save CSV files. Defaults to "data".
-    filename : str, optional
-        CSV filename prefix. If None, auto-generated with timestamp.
-        Files will be named: {filename}_BTC.csv and {filename}_ETH.csv
-    force_new_import : bool
-        If True, skip checking for existing files and always do a new import.
-        If False (default), check for existing CSV files and ask user confirmation.
-    auto_load_existing : bool
-        If True, automatically load existing CSV files without asking for confirmation.
-        Useful in notebooks where input() may not work well. Defaults to False.
-    
-    Returns
-    -------
-    dict[str, pd.DataFrame]
-        Dictionary with currency keys ("BTC", "ETH") and corresponding DataFrames.
-        Each DataFrame contains columns:
-        - expiry_str: Expiry string (e.g., "29NOV24")
-        - expiry_date: Parsed expiry date
-        - strike: Strike price
-        - type: Option type (C or P)
-        - mark_iv: Implied volatility
-        - mark_price: Mark price
-        - underlying_price: Underlying asset price
-        - open_interest: Open interest
-        - bid_price: Bid price
-        - ask_price: Ask price
-        - best_bid_price: Best bid price
-        - best_ask_price: Best ask price
-        - volume: 24h volume
-        - instrument_name: Full instrument name
-    
-    Examples
-    --------
-    >>> # Using string dates
-    >>> dfs = import_options_data("2024-11-01", "2024-12-31")
-    >>> btc_df = dfs["BTC"]
-    >>> eth_df = dfs["ETH"]
-    >>> 
-    >>> # Using datetime objects
-    >>> from datetime import datetime
-    >>> dfs = import_options_data(
-    ...     datetime(2024, 11, 1),
-    ...     datetime(2024, 12, 31)
-    ... )
-    """
-    # Ensure output_dir is relative to the project root directory (Option_Pricing)
-    # This ensures data is always saved/loaded from the project's data/ folder,
-    # not from Documents or other locations
-    if not os.path.isabs(output_dir):
-        # Try to get the script's directory first (works when imported as module)
+    if os.path.isabs(output_dir):
+        final_dir = output_dir
+    else:
+        # 1) Essayer d'utiliser le répertoire du fichier courant
         script_dir = None
         try:
-            # Get the absolute path of this file
             file_path = os.path.abspath(__file__)
             script_dir = os.path.dirname(file_path)
-            # Verify that import_crypto_options.py exists in this directory
-            if not os.path.exists(os.path.join(script_dir, "import_crypto_options.py")):
+            # Vérifier que import_other_options.py existe dans ce répertoire
+            if not os.path.exists(os.path.join(script_dir, "import_other_options.py")):
                 script_dir = None
         except NameError:
-            # __file__ not available (e.g., in Jupyter notebook)
+            # __file__ non disponible (ex: dans un notebook Jupyter)
             pass
-        
-        # If we couldn't get it from __file__, search from current directory
+
+        # 2) Si on n'a pas trouvé via __file__, chercher depuis le répertoire courant
         if script_dir is None:
             script_dir = os.getcwd()
-            # Check if we're already in the project root (has import_crypto_options.py)
-            if not os.path.exists(os.path.join(script_dir, "import_crypto_options.py")):
-                # Try to find the project root by looking for the file
+            # Vérifier si on est déjà dans le répertoire du projet
+            if not os.path.exists(os.path.join(script_dir, "import_other_options.py")):
+                # Chercher le répertoire du projet en remontant
                 current = script_dir
-                for _ in range(10):  # Go up max 10 levels
-                    test_path = os.path.join(current, "import_crypto_options.py")
+                for _ in range(10):  # Remonter max 10 niveaux
+                    test_path = os.path.join(current, "import_other_options.py")
                     if os.path.exists(test_path):
                         script_dir = current
                         break
                     parent = os.path.dirname(current)
-                    if parent == current:  # Reached filesystem root
+                    if parent == current:  # Atteint la racine du système
                         break
                     current = parent
-        
-        # Final verification: ensure we're in the Option_Pricing directory
-        # If script_dir contains "Option_Pricing", make sure we use the Option_Pricing directory itself
+
+        # 3) Vérification finale : s'assurer qu'on est dans Option_Pricing
         if script_dir and "Option_Pricing" in script_dir:
-            # Split the path and find Option_Pricing
+            # Diviser le chemin et trouver Option_Pricing
             parts = script_dir.split(os.sep)
             if "Option_Pricing" in parts:
-                # Find the index of Option_Pricing
+                # Trouver l'index de Option_Pricing
                 option_pricing_idx = None
                 for i, part in enumerate(parts):
                     if part == "Option_Pricing":
                         option_pricing_idx = i
                         break
                 if option_pricing_idx is not None:
-                    # Reconstruct path up to and including Option_Pricing
+                    # Reconstruire le chemin jusqu'à et incluant Option_Pricing
                     script_dir = os.sep.join(parts[:option_pricing_idx + 1])
-        
-        # Build the final output directory
+
+        # Construire le répertoire de sortie final
         if script_dir:
-            output_dir = os.path.join(script_dir, output_dir)
+            final_dir = os.path.join(script_dir, output_dir)
         else:
-            # Fallback: use current directory (shouldn't happen, but safer)
-            output_dir = os.path.join(os.getcwd(), output_dir)
+            # Fallback : utiliser le répertoire courant (ne devrait pas arriver)
+            final_dir = os.path.join(os.getcwd(), output_dir)
             print(f"⚠️  Warning: Could not find project root, using current directory: {os.getcwd()}")
-    
-    # Normalize the path (resolve any .. or . components)
-    output_dir = os.path.normpath(output_dir)
-    
-    # Verify the final path contains "Option_Pricing"
-    if "Option_Pricing" not in output_dir:
-        print(f"⚠️  Warning: Data directory path doesn't contain 'Option_Pricing': {output_dir}")
+
+    # Normaliser le chemin (résoudre les .. ou .)
+    final_dir = os.path.normpath(final_dir)
+
+    # Vérifier que le chemin final contient "Option_Pricing"
+    if "Option_Pricing" not in final_dir:
+        print(f"⚠️  Warning: Data directory path doesn't contain 'Option_Pricing': {final_dir}")
         print(f"   Expected path should contain: .../Option_Pricing/data/")
-    
-    # Confirm the data directory path
-    print(f"📁 Data will be saved/loaded from: {output_dir}")
-    
-    # Parse dates
-    if isinstance(start_date, str):
-        start_date = datetime.strptime(start_date, "%Y-%m-%d").date()
-    elif isinstance(start_date, datetime):
-        start_date = start_date.date()
-    
-    if isinstance(end_date, str):
-        end_date = datetime.strptime(end_date, "%Y-%m-%d").date()
-    elif isinstance(end_date, datetime):
-        end_date = end_date.date()
-    
-    if currencies is None:
-        currencies = ["BTC", "ETH"]
-    
-    # Check for existing CSV files
-    if not force_new_import:
-        existing_files = check_existing_csvs(output_dir, currencies)
-        existing_currencies = [c for c, f in existing_files.items() if f is not None]
-        
-        if existing_currencies:
-            print(f"\n⚠️  Existing CSV files found in '{output_dir}':")
-            for currency in existing_currencies:
-                print(f"   - {os.path.basename(existing_files[currency])}")
-            
-            # Auto-load or ask user
-            if auto_load_existing:
-                print("\n📂 Auto-loading existing CSV files (auto_load_existing=True)...")
-                choice = "1"
-            else:
-                # Ask user if they want to load existing data or do a new import
-                print("\nOptions:")
-                print("  1. Load existing CSV files (recommended if data is recent)")
-                print("  2. Do a new import from Deribit API")
-                
-                try:
-                    choice = input("\nEnter your choice (1 or 2, default=1): ").strip()
-                except (KeyboardInterrupt, EOFError):
-                    # In notebooks or non-interactive environments, default to loading existing
-                    print("\n⚠️  Input not available, loading existing files...")
-                    choice = "1"
-            
-            if choice == "" or choice == "1":
-                    # Load existing CSV files
-                    print("\n📂 Loading existing CSV files...")
-                    dataframes = {}
-                    for currency in currencies:
-                        if existing_files.get(currency):
-                            df = pd.read_csv(existing_files[currency])
-                            # Convert expiry_date to datetime if it's a string
-                            if 'expiry_date' in df.columns:
-                                df['expiry_date'] = pd.to_datetime(df['expiry_date'])
-                            dataframes[currency] = df
-                            print(f"✅ Loaded {len(df)} {currency} options from {os.path.basename(existing_files[currency])}")
-                        else:
-                            print(f"⚠️  No existing CSV found for {currency}, fetching from API...")
-                            # Fetch for this currency only
-                            raw_data = fetch_options_data(currency, env)
-                            currency_rows = []
-                            
-                            for row in raw_data:
-                                instrument_name = row.get("instrument_name")
-                                if not instrument_name:
-                                    continue
-                                
-                                parsed = parse_option_name(instrument_name)
-                                if not parsed:
-                                    continue
-                                
-                                expiry_date = parsed["expiry_date"]
-                                if expiry_date is None:
-                                    continue
-                                
-                                expiry_date_only = expiry_date.date() if isinstance(expiry_date, datetime) else expiry_date
-                                
-                                if not (start_date <= expiry_date_only <= end_date):
-                                    continue
-                                
-                                option_row = {
-                                    "expiry_str": parsed["expiry_str"],
-                                    "expiry_date": parsed["expiry_date"],
-                                    "strike": parsed["strike"],
-                                    "type": parsed["type"],
-                                    "mark_iv": row.get("mark_iv"),
-                                    "mark_price": row.get("mark_price"),
-                                    "underlying_price": row.get("underlying_price"),
-                                    "open_interest": row.get("open_interest"),
-                                    "bid_price": row.get("bid_price"),
-                                    "ask_price": row.get("ask_price"),
-                                    "best_bid_price": row.get("best_bid_price"),
-                                    "best_ask_price": row.get("best_ask_price"),
-                                    "volume": row.get("volume"),
-                                    "instrument_name": instrument_name,
-                                }
-                                currency_rows.append(option_row)
-                            
-                            if currency_rows:
-                                df = pd.DataFrame(currency_rows)
-                                df = df.sort_values(["expiry_date", "strike", "type"]).reset_index(drop=True)
-                                dataframes[currency] = df
-                                
-                                # Export this new currency
-                                os.makedirs(output_dir, exist_ok=True)
-                                if filename is None:
-                                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                                    filename_prefix = f"options_data_{timestamp}"
-                                else:
-                                    filename_prefix = filename
-                                csv_path = os.path.join(output_dir, f"{filename_prefix}_{currency}.csv")
-                                df.to_csv(csv_path, index=False)
-                                print(f"✅ Exported {len(df)} {currency} options to {csv_path}")
-                            else:
-                                dataframes[currency] = pd.DataFrame()
-                                print(f"  No {currency} options found in range")
-                    
-                    return dataframes
-            else:
-                print("\n🔄 Proceeding with new import from Deribit API...")
-    
-    # Fetch data for each currency separately
-    dataframes = {}
-    
-    for currency in currencies:
-        print(f"Fetching {currency} options data...")
-        raw_data = fetch_options_data(currency, env)
-        
-        currency_rows = []
-        
-        for row in raw_data:
-            instrument_name = row.get("instrument_name")
-            if not instrument_name:
-                continue
-            
-            # Parse option name
-            parsed = parse_option_name(instrument_name)
-            if not parsed:
-                continue
-            
-            # Filter by maturity range
-            expiry_date = parsed["expiry_date"]
-            if expiry_date is None:
-                continue
-            
-            expiry_date_only = expiry_date.date() if isinstance(expiry_date, datetime) else expiry_date
-            
-            if not (start_date <= expiry_date_only <= end_date):
-                continue
-            
-            # Extract all available fields (remove currency from parsed as it's redundant)
-            option_row = {
-                "expiry_str": parsed["expiry_str"],
-                "expiry_date": parsed["expiry_date"],
-                "strike": parsed["strike"],
-                "type": parsed["type"],
-                "mark_iv": row.get("mark_iv"),
-                "mark_price": row.get("mark_price"),
-                "underlying_price": row.get("underlying_price"),
-                "open_interest": row.get("open_interest"),
-                "bid_price": row.get("bid_price"),
-                "ask_price": row.get("ask_price"),
-                "best_bid_price": row.get("best_bid_price"),
-                "best_ask_price": row.get("best_ask_price"),
-                "volume": row.get("volume"),
-                "instrument_name": instrument_name,
-            }
-            
-            currency_rows.append(option_row)
-        
-        # Create DataFrame for this currency
-        if currency_rows:
-            df = pd.DataFrame(currency_rows)
-            # Sort by expiry, strike, type
-            df = df.sort_values(["expiry_date", "strike", "type"]).reset_index(drop=True)
-            dataframes[currency] = df
-            print(f"  Found {len(df)} {currency} options in range")
-        else:
-            dataframes[currency] = pd.DataFrame()
-            print(f"  No {currency} options found in range")
-    
-    # Export to CSV (separate files for each currency)
+        print(f"   Current working directory: {os.getcwd()}")
+        print(f"   Script directory detected: {script_dir if 'script_dir' in locals() else 'unknown'}")
+
+    print(f"📁 Data will be saved to / loaded from: {final_dir}")
+    return final_dir
+
+
+def _ensure_date(d: Union[str, datetime, date]) -> date:
+    """Convertit str/datetime/date en objet date."""
+    if isinstance(d, date) and not isinstance(d, datetime):
+        return d
+    if isinstance(d, datetime):
+        return d.date()
+    if isinstance(d, str):
+        # Format attendu : YYYY-MM-DD
+        return datetime.strptime(d, "%Y-%m-%d").date()
+    raise TypeError(f"Unsupported date type: {type(d)}")
+
+
+def _find_existing_csv(
+    output_dir: str,
+    ticker: str,
+    filename: Optional[str] = None,
+) -> Optional[str]:
+    """
+    Cherche un CSV existant pour ce ticker dans `output_dir`.
+
+    - Si `filename` est fourni, on vérifie directement {filename}.csv.
+    - Sinon, on cherche les fichiers auto-générés :
+      sp500_options_{TICKER_CLEAN}_YYYYMMDD_HHMMSS.csv
+    """
+    if not os.path.exists(output_dir):
+        return None
+
+    # Cas 1 : l'utilisateur a donné un nom de fichier spécifique
+    if filename is not None:
+        path = os.path.join(output_dir, f"{filename}.csv")
+        if os.path.exists(path):
+            return path
+        return None
+
+    # Cas 2 : nom auto-généré
+    ticker_clean = ticker.replace("^", "").upper()
+    prefix = f"sp500_options_{ticker_clean}_"
+
+    candidates = [
+        f for f in os.listdir(output_dir)
+        if f.startswith(prefix) and f.endswith(".csv")
+    ]
+    if not candidates:
+        return None
+
+    # On prend le plus récent (ordre lexicographique vu que timestamp dans le nom)
+    latest = sorted(candidates)[-1]
+    return os.path.join(output_dir, latest)
+
+
+def import_sp500_options_data(
+    start_date: Union[str, datetime, date],
+    end_date: Union[str, datetime, date],
+    ticker: str = "^SPX",
+    output_dir: str = "data",
+    filename: Optional[str] = None,
+    filter_by_date: bool = True,
+) -> pd.DataFrame:
+    """
+    Importe les options S&P 500 (ou autre sous-jacent Yahoo) via yfinance
+    pour un intervalle de maturité donné, sauvegarde un CSV dans `data/`
+    et renvoie un DataFrame unique.
+
+    Comportement :
+    - Si un CSV existe déjà dans `output_dir` pour ce ticker (et ce filename
+      si fourni), il est chargé et renvoyé (avec filtrage optionnel par date).
+    - Sinon, les données sont téléchargées, sauvegardées, puis renvoyées.
+
+    Paramètres
+    ----------
+    start_date : str, datetime ou date
+        Date de début (incluse) du filtre de maturité, au format "YYYY-MM-DD"
+        si string.
+    end_date : str, datetime ou date
+        Date de fin (incluse) du filtre de maturité.
+    ticker : str
+        Ticker Yahoo Finance de l'underlying. Exemples :
+        - "^SPX" pour l'indice S&P 500
+        - "^GSPC" (autre ticker S&P 500)
+        - "SPY" pour l'ETF S&P 500
+    output_dir : str
+        Dossier de sauvegarde (par défaut "data", à la racine du projet).
+    filename : str, optionnel
+        Nom de fichier (sans extension). Si None, un nom auto-généré sera utilisé.
+    filter_by_date : bool, default=True
+        Si True, filtre les options par date même lors du chargement d'un CSV existant.
+        Si False, charge toutes les options du CSV sans filtrage.
+
+    Retour
+    ------
+    pd.DataFrame
+        Un DataFrame avec les colonnes harmonisées avec ton module Deribit :
+        - expiry_str      : date d'expiration au format YYYY-MM-DD
+        - expiry_date     : datetime de l'expiration
+        - strike          : prix d'exercice
+        - type            : "C" (call) ou "P" (put)
+        - mark_iv         : implied volatility (yfinance -> impliedVolatility)
+        - mark_price      : dernier prix (lastPrice)
+        - underlying_price: dernier cours du sous-jacent (même valeur pour toutes les lignes)
+        - open_interest   : open interest
+        - bid_price       : bid
+        - ask_price       : ask
+        - best_bid_price  : = bid_price
+        - best_ask_price  : = ask_price
+        - volume          : volume
+        - instrument_name : ticker-expiry-strike-type (synthetique)
+    """
+    # Normaliser les dates
+    start_date = _ensure_date(start_date)
+    end_date = _ensure_date(end_date)
+
+    if start_date > end_date:
+        raise ValueError("start_date must be <= end_date")
+
+    # Résoudre le chemin du dossier data
+    output_dir = _resolve_output_dir(output_dir)
     os.makedirs(output_dir, exist_ok=True)
-    print(f"📁 Saving data to: {output_dir}")
-    
+
+    # 🔎 1) Vérifier s'il existe déjà un CSV pour ce ticker
+    existing_csv = _find_existing_csv(output_dir, ticker, filename)
+    if existing_csv is not None:
+        print(f"📂 Existing CSV found, loading instead of fetching from Yahoo Finance:\n   {existing_csv}")
+        df = pd.read_csv(existing_csv)
+        
+        # Informations sur le CSV chargé
+        total_rows = len(df)
+        print(f"📊 Total rows in CSV: {total_rows}")
+        
+        # S'assurer que expiry_date est bien en datetime
+        if "expiry_date" in df.columns:
+            df["expiry_date"] = pd.to_datetime(df["expiry_date"])
+        else:
+            print("⚠️  Warning: 'expiry_date' column not found in CSV")
+            return df
+        
+        # Filtrer par date si demandé
+        if filter_by_date:
+            df["expiry_date_only"] = df["expiry_date"].dt.date
+            before_filter = len(df)
+            df = df[(df["expiry_date_only"] >= start_date) & (df["expiry_date_only"] <= end_date)]
+            df = df.drop(columns=["expiry_date_only"])  # Nettoyer la colonne temporaire
+            
+            after_filter = len(df)
+            print(f"✅ Loaded {after_filter} options after filtering by date range ({start_date} to {end_date})")
+            if before_filter != after_filter:
+                print(f"   ({before_filter - after_filter} options filtered out)")
+        else:
+            print(f"✅ Loaded all {total_rows} options from CSV (no date filtering)")
+        
+        return df
+
+    # 🔄 2) Sinon : téléchargement depuis Yahoo Finance
+    print(f"🔎 Fetching options from Yahoo Finance for ticker {ticker}...")
+    print(f"   Date range: {start_date} to {end_date}")
+    tk = yf.Ticker(ticker)
+
+    # Liste des maturités disponibles sur Yahoo
+    expirations = getattr(tk, "options", [])
+    if not expirations:
+        print("⚠️  No option expirations available for this ticker.")
+        return pd.DataFrame()
+
+    print(f"   Found {len(expirations)} expiration dates available")
+
+    # Récupérer un prix du sous-jacent (close le plus récent)
+    try:
+        hist = tk.history(period="1d")
+        if hist.empty:
+            underlying_price = None
+        else:
+            underlying_price = float(hist["Close"].iloc[-1])
+            print(f"   Underlying price: ${underlying_price:.2f}")
+    except Exception as e:
+        print(f"⚠️  Could not fetch underlying price: {e}")
+        underlying_price = None
+
+    all_rows = []
+    expirations_in_range = 0
+
+    for exp_str in expirations:
+        try:
+            exp_date = datetime.strptime(exp_str, "%Y-%m-%d").date()
+        except ValueError:
+            # Format inattendu, on ignore
+            continue
+
+        if not (start_date <= exp_date <= end_date):
+            continue
+
+        expirations_in_range += 1
+        print(f"  ⏱  Fetching option chain for expiry {exp_str}...")
+        try:
+            chain = tk.option_chain(exp_str)
+        except Exception as e:
+            print(f"  ⚠️  Failed to fetch chain for {exp_str}: {e}")
+            continue
+
+        for opt_df, opt_type in [(chain.calls, "C"), (chain.puts, "P")]:
+            if opt_df is None or opt_df.empty:
+                continue
+
+            tmp = opt_df.copy()
+            tmp["type"] = opt_type
+            tmp["expiry_str"] = exp_str
+            tmp["expiry_date"] = datetime.strptime(exp_str, "%Y-%m-%d")
+            tmp["underlying_ticker"] = ticker
+            all_rows.append(tmp)
+
+    print(f"   Processed {expirations_in_range} expiration dates in range")
+
+    if not all_rows:
+        print("⚠️  No options found in the requested expiry range.")
+        return pd.DataFrame()
+
+    df = pd.concat(all_rows, ignore_index=True)
+
+    # Renommer les colonnes pour coller à ton schéma Deribit
+    rename_map = {
+        "impliedVolatility": "mark_iv",
+        "lastPrice": "mark_price",
+        "bid": "bid_price",
+        "ask": "ask_price",
+        "openInterest": "open_interest",
+    }
+    df = df.rename(columns=rename_map)
+
+    # Colonnes calculées / ajoutées
+    df["underlying_price"] = underlying_price
+    df["best_bid_price"] = df.get("bid_price")
+    df["best_ask_price"] = df.get("ask_price")
+
+    # Construire un instrument_name synthétique
+    # ex: "^SPX-2024-12-20-5000.0-C"
+    df["instrument_name"] = (
+        df["underlying_ticker"].astype(str)
+        + "-"
+        + df["expiry_str"].astype(str)
+        + "-"
+        + df["strike"].astype(str)
+        + "-"
+        + df["type"].astype(str)
+    )
+
+    # Ordonner les colonnes de manière cohérente
+    cols_order = [
+        "expiry_str",
+        "expiry_date",
+        "strike",
+        "type",
+        "mark_iv",
+        "mark_price",
+        "underlying_price",
+        "open_interest",
+        "bid_price",
+        "ask_price",
+        "best_bid_price",
+        "best_ask_price",
+        "volume",
+        "instrument_name",
+        "contractSymbol",
+        "underlying_ticker",
+    ]
+    # Garder uniquement les colonnes qui existent
+    cols_order = [c for c in cols_order if c in df.columns]
+    df = df[cols_order].sort_values(["expiry_date", "strike", "type"]).reset_index(drop=True)
+
+    # Sauvegarde CSV
     if filename is None:
+        # Petit nom de fichier propre : sp500_options_SPX_YYYYMMDD_HHMMSS.csv
+        ticker_clean = ticker.replace("^", "").upper()
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename_prefix = f"options_data_{timestamp}"
+        filename_prefix = f"sp500_options_{ticker_clean}_{timestamp}"
     else:
         filename_prefix = filename
-    
-    # Export each DataFrame to separate CSV
-    for currency, df in dataframes.items():
-        if not df.empty:
-            csv_path = os.path.join(output_dir, f"{filename_prefix}_{currency}.csv")
-            df.to_csv(csv_path, index=False)
-            print(f"✅ Exported {len(df)} {currency} options to {csv_path}")
-        else:
-            print(f"⚠️  No {currency} options to export")
-    
-    return dataframes
+
+    csv_path = os.path.join(output_dir, f"{filename_prefix}.csv")
+    df.to_csv(csv_path, index=False)
+    print(f"✅ Exported {len(df)} options to {csv_path}")
+
+    return df
 
 
 if __name__ == "__main__":
-    # Example usage
-    from datetime import datetime, timedelta
-    
-    # Import options expiring in the next 12 months
-    end_date = datetime.now() + timedelta(days=365)
-    start_date = datetime.now()
-    
-    dfs = import_options_data(
-        start_date=start_date,
-        end_date=end_date,
-        currencies=["BTC", "ETH"],
-        env="prod"
-    )
-    
-    print(f"\nSummary:")
-    for currency, df in dfs.items():
-        if not df.empty:
-            print(f"\n{currency}:")
-            print(f"  Total options: {len(df)}")
-            print(f"  Expiry range: {df['expiry_date'].min()} to {df['expiry_date'].max()}")
-            print(f"  Option types: {df['type'].value_counts().to_dict()}")
-        else:
-            print(f"\n{currency}: No options found")
+    from datetime import timedelta
 
+    # Exemple : toutes les options qui expirent dans les 6 prochains mois
+    end = datetime.now().date() + timedelta(days=720)
+    start = datetime.now().date()
+
+    df_spx = import_sp500_options_data(
+        start_date=start,
+        end_date=end,
+        ticker="^SPX",
+        output_dir="data",
+    )
+
+    print("\nSummary:")
+    if not df_spx.empty:
+        print(f"  Total options: {len(df_spx)}")
+        print(f"  Expiry range: {df_spx['expiry_date'].min()} to {df_spx['expiry_date'].max()}")
+        print(f"  Option types: {df_spx['type'].value_counts().to_dict()}")
+    else:
+        print("  No options found.")

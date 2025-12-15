@@ -31,6 +31,9 @@ class SurfaceConfig:
     rbf_smoothing: float = 0.5
     rbf_kernel: str = "thin_plate_spline"
 
+     # Time filtering
+    min_T: Optional[float] = None  # Temps minimum en années (None = pas de filtre)
+    max_T: Optional[float] = None  # Temps maximum en années (None = pas de filtre)
 
 class SPXIVSurface:
     def __init__(self, df: pd.DataFrame, cfg: SurfaceConfig = SurfaceConfig()):
@@ -49,9 +52,16 @@ class SPXIVSurface:
         df = df.copy()
         df["expiry_date"] = pd.to_datetime(df["expiry_date"], errors="coerce")
 
+        
+
         as_of = self.cfg.as_of or datetime.now()
         df["T"] = (df["expiry_date"] - pd.Timestamp(as_of)).dt.total_seconds() / (365.25 * 24 * 3600)
         df["T"] = df["T"].clip(lower=1e-6)
+
+        if self.cfg.min_T is not None:
+            df = df[df["T"] >= self.cfg.min_T]
+        if self.cfg.max_T is not None:
+            df = df[df["T"] <= self.cfg.max_T]
 
         df["strike"] = pd.to_numeric(df["strike"], errors="coerce")
         df["S"] = pd.to_numeric(df.get("underlying_price"), errors="coerce")
@@ -130,7 +140,11 @@ class SPXIVSurface:
         z = self.df["iv_pct"].values
 
         x_min, x_max = np.nanpercentile(x, [1, 99])
-        t_min, t_max = np.nanpercentile(t, [1, 99])
+
+        if self.cfg.min_T is not None and self.cfg.max_T is not None:
+            t_min, t_max = self.cfg.min_T, self.cfg.max_T
+        else:
+            t_min, t_max = np.nanpercentile(t, [1, 99])
 
         X = np.linspace(x_min, x_max, self.cfg.grid_n)
         TT = np.linspace(t_min, t_max, self.cfg.grid_n)
