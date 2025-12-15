@@ -167,8 +167,12 @@ def _find_existing_csv(
     if not candidates:
         return None
 
-    # On prend le plus récent (ordre lexicographique vu que timestamp dans le nom)
-    latest = sorted(candidates)[-1]
+    # On prend le plus récent basé sur la date de modification du fichier (plus fiable que le nom)
+    candidates_with_mtime = [
+        (f, os.path.getmtime(os.path.join(output_dir, f)))
+        for f in candidates
+    ]
+    latest = max(candidates_with_mtime, key=lambda x: x[1])[0]
     return os.path.join(output_dir, latest)
 
 

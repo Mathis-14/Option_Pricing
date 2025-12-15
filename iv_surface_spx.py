@@ -141,15 +141,13 @@ class SPXIVSurface:
 
         x_min, x_max = np.nanpercentile(x, [1, 99])
 
-        # Utiliser les limites réelles des données pour éviter l'extrapolation excessive
-        # mais respecter min_T et max_T comme limites maximales si définis
+        # Utiliser les limites configurées si définies, sinon utiliser les percentiles des données
         t_data_min, t_data_max = np.nanmin(t), np.nanmax(t)
         
         if self.cfg.min_T is not None and self.cfg.max_T is not None:
-            # Utiliser les limites configurées, mais ne pas dépasser les données réelles
-            # pour éviter l'extrapolation dans des zones sans données
-            t_min = max(self.cfg.min_T, t_data_min)
-            t_max = min(self.cfg.max_T, t_data_max)
+            # Utiliser les limites configurées (permettre l'extrapolation si nécessaire)
+            t_min = self.cfg.min_T
+            t_max = self.cfg.max_T
         else:
             # Utiliser les percentiles des données réelles
             t_min, t_max = np.nanpercentile(t, [1, 99])
@@ -167,6 +165,12 @@ class SPXIVSurface:
             smoothing=self.cfg.rbf_smoothing
         )
         ZZ = rbf(grid_pts).reshape(XX.shape)
+        
+        # Masquer les valeurs aberrantes (NaN, inf, ou valeurs extrêmes)
+        ZZ[~np.isfinite(ZZ)] = np.nan
+        ZZ[ZZ < 0] = np.nan
+        ZZ[ZZ > 500] = np.nan  # IV > 500% est probablement aberrant
+        
         return XX, YY, ZZ
 
     def plot(self, title: str = "SPX Implied Volatility Surface (OTM)", interpolate: bool = True):
@@ -183,6 +187,7 @@ class SPXIVSurface:
                     hovertemplate="ln(K/F): %{x:.3f}<br>T: %{y:.3f}y<br>IV: %{z:.2f}%<extra></extra>"
                 ))
 
+        # Points de données (tous les OTM quotes)
         fig.add_trace(go.Scatter3d(
             x=self.df["x"], y=self.df["T"], z=self.df["iv_pct"],
             mode="markers",
@@ -191,6 +196,10 @@ class SPXIVSurface:
             hovertemplate="ln(K/F): %{x:.3f}<br>T: %{y:.3f}y<br>IV: %{z:.2f}%<extra></extra>"
         ))
 
+        # Déterminer les limites de l'axe Y
+        t_min_plot = self.cfg.min_T if self.cfg.min_T is not None else self.df["T"].min()
+        t_max_plot = self.cfg.max_T if self.cfg.max_T is not None else self.df["T"].max()
+        
         fig.update_layout(
             template="plotly_dark",
             title=title,
@@ -198,6 +207,9 @@ class SPXIVSurface:
                 xaxis_title="log-moneyness ln(K/F)",
                 yaxis_title="Time to expiry (years)",
                 zaxis_title="Implied vol (%)",
+                yaxis=dict(
+                    range=[t_min_plot, t_max_plot]  # Forcer les limites de l'axe Y
+                ),
                 camera=dict(eye=dict(x=1.6, y=1.4, z=1.2))
             ),
             height=720
