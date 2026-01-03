@@ -32,7 +32,7 @@ def plot_smile(surface: SPXIVSurface,
                detailed_diagnostics: bool = False,
                atm_blend_threshold: float = 0.10,
                save_plot: bool = True,
-               output_dir: str = "plot/vol/vol_2D",
+               output_dir: str = "plot/vol/vol_2D/smile",
                maturities: list = None,
                show_data_points: bool = False,
                show_true_data_points: bool = False):
@@ -57,7 +57,7 @@ def plot_smile(surface: SPXIVSurface,
         detailed_diagnostics: Print sample data and parity checks (default False)
         atm_blend_threshold: ATM region for blending put/call IVs (default 0.10)
         save_plot: Whether to save the plot (default True)
-        output_dir: Directory to save plots (default "plot/vol/vol_2D")
+        output_dir: Directory to save plots (default "plot/vol/vol_2D/smile")
         maturities: List of maturities to plot (e.g., ["2D", "30D"]). Default None = all
         show_data_points: Whether to show blended data point markers (default False)
         show_true_data_points: Whether to show raw option data points (default False)
@@ -446,54 +446,345 @@ def plot_smile(surface: SPXIVSurface,
     fig.show()
 
 
-def plot_vol_term_structure(surface: SPXIVSurface):
-    """Plots the Volatility Term Structure (IV vs Time to Maturity) for ATM options."""
-    df = surface.df
+def plot_vol_term_structure(surface: SPXIVSurface,
+                            min_volume: int = 10,
+                            min_oi: int = 100,
+                            max_spread_pct: float = 0.20,
+                            iv_min: float = 5.0,
+                            iv_max: float = 100.0,
+                            outlier_std: float = 2.0,
+                            atm_tolerance: float = 0.05,
+                            atm_blend_threshold: float = 0.02,
+                            smooth: bool = True,
+                            diagnostics: bool = True,
+                            save_plot: bool = True,
+                            output_dir: str = "plot/vol/vol_2D/term_structure",
+                            show_raw_points: bool = True):
+    """Plots production-quality Volatility Term Structure (ATM IV vs Time to Maturity).
     
-    # Filter for At-The-Money (ATM) options
-    # We define ATM as log-moneyness 'x' being close to 0.
-    # Adjust tolerance as needed.
-    tolerance = 0.02
-    atm_df = df[df['x'].abs() < tolerance].copy()
+    Strategy to compute robust ATM IV per expiry:
+    1. Filter data by quality (volume, OI, spread)
+    2. For each expiry, extract near-ATM puts and calls
+    3. Interpolate to exact ATM (x=0) for both puts and calls
+    4. Blend put/call ATM IVs using smooth weighting
+    5. Remove outliers and apply cubic spline smoothing
     
-    if atm_df.empty:
-        print("No ATM data found (abs(x) < 0.02). widening search...")
-        atm_df = df[df['x'].abs() < 0.05].copy()
+    Args:
+        surface: SPXIVSurface instance with processed options data
+        min_volume: Minimum volume required (default 10)
+        min_oi: Minimum open interest required (default 100)
+        max_spread_pct: Maximum bid-ask spread as % of mid (default 0.20 = 20%)
+        iv_min: Minimum IV threshold in % (default 5.0)
+        iv_max: Maximum IV threshold in % (default 100.0)
+        outlier_std: Number of standard deviations for outlier removal (default 2.0)
+        atm_tolerance: Max |ln(K/F)| to consider for ATM interpolation (default 0.05)
+        atm_blend_threshold: ATM region for blending put/call IVs (default 0.02)
+        smooth: Whether to apply cubic spline smoothing (default True)
+        diagnostics: Whether to print filtering statistics (default True)
+        save_plot: Whether to save the plot (default True)
+        output_dir: Directory to save plots (default "plot/vol/vol_2D/term_structure")
+        show_raw_points: Whether to show individual ATM option quotes (default True)
+    """
+    import numpy as np
+    from scipy.interpolate import CubicSpline, interp1d
+    import os
+    from datetime import datetime
     
-    if atm_df.empty:
-        print("Still no ATM data found.")
+    df = surface.df.copy()
+    
+    if diagnostics:
+        print("\n" + "="*80)
+        print("VOLATILITY TERM STRUCTURE DIAGNOSTICS (ROBUST ATM EXTRACTION)")
+        print("="*80)
+    
+    # Initial count
+    initial_count = len(df)
+    
+    # 1. VOLUME & OPEN INTEREST FILTER
+    df = df[(df['volume'] >= min_volume) | (df['open_interest'] >= min_oi)]
+    if diagnostics:
+        print(f"\n1. Liquidity filter (volume ≥ {min_volume} OR OI ≥ {min_oi}):")
+        print(f"   Kept {len(df):,} / {initial_count:,} options")
+    
+    # 2. BID-ASK SPREAD FILTER
+    count_before = len(df)
+    df['spread_pct'] = (df['ask'] - df['bid']) / df['mid']
+    df = df[df['spread_pct'] <= max_spread_pct]
+    if diagnostics:
+        print(f"\n2. Spread filter (spread ≤ {max_spread_pct*100:.0f}% of mid):")
+        print(f"   Kept {len(df):,} / {count_before:,} options")
+    
+    # 3. IV RANGE FILTER
+    count_before = len(df)
+    df = df[(df['iv_pct'] >= iv_min) & (df['iv_pct'] <= iv_max)]
+    if diagnostics:
+        print(f"\n3. IV range filter ({iv_min:.0f}% ≤ IV ≤ {iv_max:.0f}%):")
+        print(f"   Kept {len(df):,} / {count_before:,} options")
+    
+    # 4. ATM REGION FILTER (keep only near-ATM for term structure)
+    count_before = len(df)
+    df = df[df['x'].abs() <= atm_tolerance]
+    if diagnostics:
+        print(f"\n4. ATM region filter (|ln(K/F)| ≤ {atm_tolerance}):")
+        print(f"   Kept {len(df):,} / {count_before:,} options")
+    
+    # 5. VALIDATE DATA
+    df = df[np.isfinite(df['x']) & np.isfinite(df['iv_pct'])]
+    
+    if df.empty:
+        print("\n❌ ERROR: No ATM data remaining after filtering!")
         return
-
-    # Sort by T
-    atm_df = atm_df.sort_values('T')
-
+    
+    # Get unique expiries
+    expiries = sorted(df['expiry_date'].unique())
+    
+    if diagnostics:
+        print(f"\n5. Found {len(expiries)} unique expiries")
+        print("="*80)
+    
+    # EXTRACT ATM IV PER EXPIRY using interpolation + blending
+    term_data = []
+    raw_points = []  # For showing individual quotes
+    
+    for expiry in expiries:
+        subset = df[df['expiry_date'] == expiry].copy()
+        
+        if subset.empty or len(subset) < 2:
+            continue
+        
+        T_val = subset['T'].iloc[0]
+        DTE = int(T_val * 365)
+        
+        # Separate puts and calls
+        puts = subset[subset['type'] == 'P'].copy()
+        calls = subset[subset['type'] == 'C'].copy()
+        
+        # Store raw points for visualization
+        for _, row in subset.iterrows():
+            raw_points.append({
+                'T': T_val,
+                'DTE': DTE,
+                'iv_pct': row['iv_pct'],
+                'type': row['type'],
+                'x': row['x']
+            })
+        
+        # Try to interpolate ATM IV (at x=0)
+        put_atm_iv = None
+        call_atm_iv = None
+        
+        # Interpolate put IV to x=0
+        if len(puts) >= 2:
+            puts_sorted = puts.sort_values('x')
+            x_puts = puts_sorted['x'].values
+            iv_puts = puts_sorted['iv_pct'].values
+            
+            # Check if x=0 is within interpolation range
+            if x_puts.min() <= 0 <= x_puts.max():
+                try:
+                    f_put = interp1d(x_puts, iv_puts, kind='linear', fill_value='extrapolate')
+                    put_atm_iv = float(f_put(0))
+                except:
+                    pass
+            elif len(puts) >= 1:
+                # Use closest put
+                closest_idx = puts['x'].abs().idxmin()
+                put_atm_iv = puts.loc[closest_idx, 'iv_pct']
+        elif len(puts) == 1:
+            put_atm_iv = puts['iv_pct'].iloc[0]
+        
+        # Interpolate call IV to x=0
+        if len(calls) >= 2:
+            calls_sorted = calls.sort_values('x')
+            x_calls = calls_sorted['x'].values
+            iv_calls = calls_sorted['iv_pct'].values
+            
+            if x_calls.min() <= 0 <= x_calls.max():
+                try:
+                    f_call = interp1d(x_calls, iv_calls, kind='linear', fill_value='extrapolate')
+                    call_atm_iv = float(f_call(0))
+                except:
+                    pass
+            elif len(calls) >= 1:
+                closest_idx = calls['x'].abs().idxmin()
+                call_atm_iv = calls.loc[closest_idx, 'iv_pct']
+        elif len(calls) == 1:
+            call_atm_iv = calls['iv_pct'].iloc[0]
+        
+        # Blend put/call ATM IVs
+        if put_atm_iv is not None and call_atm_iv is not None:
+            # Average of put and call ATM IVs (they should be equal by put-call parity)
+            atm_iv = (put_atm_iv + call_atm_iv) / 2
+            source = 'Blended'
+        elif put_atm_iv is not None:
+            atm_iv = put_atm_iv
+            source = 'Put'
+        elif call_atm_iv is not None:
+            atm_iv = call_atm_iv
+            source = 'Call'
+        else:
+            # Fallback: median of all near-ATM options
+            atm_iv = subset['iv_pct'].median()
+            source = 'Median'
+        
+        if np.isfinite(atm_iv) and iv_min <= atm_iv <= iv_max:
+            term_data.append({
+                'T': T_val,
+                'DTE': DTE,
+                'atm_iv': atm_iv,
+                'source': source,
+                'n_puts': len(puts),
+                'n_calls': len(calls)
+            })
+            
+            if diagnostics:
+                print(f"  {DTE:3d}D: ATM IV = {atm_iv:.2f}% ({source}, {len(puts)}P/{len(calls)}C)")
+    
+    if not term_data:
+        print("\n❌ ERROR: Could not extract ATM IV for any expiry!")
+        return
+    
+    term_df = pd.DataFrame(term_data)
+    raw_df = pd.DataFrame(raw_points)
+    
+    # 6. OUTLIER REMOVAL on term structure
+    count_before = len(term_df)
+    median_iv = term_df['atm_iv'].median()
+    std_iv = term_df['atm_iv'].std()
+    
+    if std_iv > 0:
+        term_df = term_df[np.abs(term_df['atm_iv'] - median_iv) <= outlier_std * std_iv]
+    
+    if diagnostics and count_before > len(term_df):
+        print(f"\n6. Removed {count_before - len(term_df)} outlier expiries")
+    
+    if len(term_df) < 2:
+        print("\n❌ ERROR: Too few data points for term structure!")
+        return
+    
+    term_df = term_df.sort_values('T')
+    
+    if diagnostics:
+        print(f"\n7. Final term structure: {len(term_df)} expiries")
+        print(f"   T range: {term_df['T'].min():.3f}y to {term_df['T'].max():.3f}y")
+        print(f"   IV range: {term_df['atm_iv'].min():.2f}% to {term_df['atm_iv'].max():.2f}%")
+        print("="*80 + "\n")
+    
+    # BUILD PLOT
     fig = go.Figure()
     
+    # Show raw ATM quotes (if requested)
+    if show_raw_points and not raw_df.empty:
+        # Puts
+        raw_puts = raw_df[raw_df['type'] == 'P']
+        if not raw_puts.empty:
+            fig.add_trace(go.Scatter(
+                x=raw_puts['T'],
+                y=raw_puts['iv_pct'],
+                mode='markers',
+                marker=dict(size=4, color='rgba(255,100,100,0.4)', symbol='x'),
+                name="ATM Puts",
+                hovertemplate='Put<br>DTE: %{customdata[0]}D<br>IV: %{y:.2f}%<br>ln(K/F): %{customdata[1]:.3f}<extra></extra>',
+                customdata=np.column_stack([raw_puts['DTE'], raw_puts['x']])
+            ))
+        
+        # Calls  
+        raw_calls = raw_df[raw_df['type'] == 'C']
+        if not raw_calls.empty:
+            fig.add_trace(go.Scatter(
+                x=raw_calls['T'],
+                y=raw_calls['iv_pct'],
+                mode='markers',
+                marker=dict(size=4, color='rgba(100,255,100,0.4)', symbol='cross'),
+                name="ATM Calls",
+                hovertemplate='Call<br>DTE: %{customdata[0]}D<br>IV: %{y:.2f}%<br>ln(K/F): %{customdata[1]:.3f}<extra></extra>',
+                customdata=np.column_stack([raw_calls['DTE'], raw_calls['x']])
+            ))
+    
+    # Extracted ATM IV points
     fig.add_trace(go.Scatter(
-        x=atm_df['T'],
-        y=atm_df['iv_pct'],
+        x=term_df['T'],
+        y=term_df['atm_iv'],
         mode='markers',
-        marker=dict(size=6, color='cyan'),
-        name="ATM Quotes"
+        marker=dict(size=10, color='cyan', symbol='circle',
+                   line=dict(width=1, color='white')),
+        name="ATM IV (Blended)",
+        hovertemplate='%{customdata[0]}D<br>ATM IV: %{y:.2f}%<br>T: %{x:.3f}y<br>Source: %{customdata[1]}<extra></extra>',
+        customdata=np.column_stack([term_df['DTE'], term_df['source']])
     ))
     
-    # Optional: Add a smoothed line (e.g. grouped median per expiry)
-    term_structure = atm_df.groupby('T')['iv_pct'].median().reset_index()
-    fig.add_trace(go.Scatter(
-        x=term_structure['T'],
-        y=term_structure['iv_pct'],
-        mode='lines',
-        line=dict(color='orange', width=2),
-        name="Median ATM Term Structure"
-    ))
-
+    # Smoothed term structure curve
+    if smooth and len(term_df) >= 4:
+        try:
+            T_vals = term_df['T'].values
+            iv_vals = term_df['atm_iv'].values
+            
+            cs = CubicSpline(T_vals, iv_vals)
+            T_smooth = np.linspace(T_vals.min(), T_vals.max(), 200)
+            iv_smooth = cs(T_smooth)
+            iv_smooth = np.clip(iv_smooth, iv_min, iv_max)
+            
+            fig.add_trace(go.Scatter(
+                x=T_smooth,
+                y=iv_smooth,
+                mode='lines',
+                line=dict(color='orange', width=3),
+                name="Smoothed Term Structure",
+                hovertemplate='T: %{x:.3f}y<br>IV: %{y:.2f}%<extra></extra>'
+            ))
+        except Exception as e:
+            if diagnostics:
+                print(f"⚠️  Spline smoothing failed: {e}")
+            # Fallback to connected line
+            fig.add_trace(go.Scatter(
+                x=term_df['T'],
+                y=term_df['atm_iv'],
+                mode='lines',
+                line=dict(color='orange', width=2),
+                name="Term Structure"
+            ))
+    else:
+        # Just connect the points
+        fig.add_trace(go.Scatter(
+            x=term_df['T'],
+            y=term_df['atm_iv'],
+            mode='lines',
+            line=dict(color='orange', width=2),
+            name="Term Structure"
+        ))
+    
+    # Layout
     fig.update_layout(
-        title="Volatility Term Structure (ATM IV vs Time to Maturity)",
+        title=dict(
+            text="Volatility Term Structure (ATM IV vs Time to Maturity)<br>"
+                 "<sub>Robust ATM extraction via interpolation + put/call blending</sub>",
+            font=dict(size=20)
+        ),
         xaxis_title="Time to Maturity (Years)",
         yaxis_title="Implied Volatility (%)",
-        template="plotly_dark"
+        template="plotly_dark",
+        legend=dict(title="Data Source", font=dict(size=12)),
+        hovermode='closest',
+        xaxis=dict(gridcolor='rgba(255,255,255,0.1)'),
+        yaxis=dict(gridcolor='rgba(255,255,255,0.1)'),
+        height=600,
+        plot_bgcolor='rgba(15,15,25,1)',
+        paper_bgcolor='rgba(10,10,15,1)'
     )
+    
+    # SAVE PLOT
+    if save_plot:
+        os.makedirs(output_dir, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"term_structure_{timestamp}.png"
+        filepath = os.path.join(output_dir, filename)
+        fig.write_image(filepath, width=1920, height=800, scale=2)
+        if diagnostics:
+            print(f"📊 Plot saved to: {filepath}\n")
+    
     fig.show()
+    
+    return term_df  # Return the term structure data for further analysis
 
 def main():
     parser = argparse.ArgumentParser(description="Plot Implied Volatility 2D Curves")
