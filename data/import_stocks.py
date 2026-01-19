@@ -88,7 +88,7 @@ def _resolve_output_dir(output_dir: str) -> str:
             # This file is in data/, so go up one level to get project root
             script_dir = os.path.dirname(script_dir)
             # Verify we're in Option_Pricing by checking for a known file
-            if not os.path.exists(os.path.join(script_dir, "import_other_options.py")):
+            if not os.path.exists(os.path.join(script_dir, "import_options.py")):
                 script_dir = None
         except NameError:
             # __file__ not available (e.g., in Jupyter notebook)
@@ -98,11 +98,11 @@ def _resolve_output_dir(output_dir: str) -> str:
         if script_dir is None:
             script_dir = os.getcwd()
             # Check if we're already in the project root
-            if not os.path.exists(os.path.join(script_dir, "import_other_options.py")):
+            if not os.path.exists(os.path.join(script_dir, "import_options.py")):
                 # Try to find the project root by traversing up
                 current = script_dir
                 for _ in range(10):  # Maximum 10 levels up
-                    test_path = os.path.join(current, "import_other_options.py")
+                    test_path = os.path.join(current, "import_options.py")
                     if os.path.exists(test_path):
                         script_dir = current
                         break
@@ -338,15 +338,22 @@ def import_stock_data(
             
             # Ensure date column is datetime
             if "date" in df.columns:
-                df["date"] = pd.to_datetime(df["date"])
+                # Handle timezone-aware date strings (e.g., "2024-01-09 00:00:00-05:00")
+                try:
+                    df["date"] = pd.to_datetime(df["date"], utc=True)
+                except Exception:
+                    # Fallback for simple date strings
+                    df["date"] = pd.to_datetime(df["date"])
             
             # Filter by requested date range
             total_rows = len(df)
-            df_date = df["date"].dt.date
+            # Convert to date for comparison (remove timezone info)
+            df_date = df["date"].dt.tz_localize(None).dt.date if df["date"].dt.tz is not None else df["date"].dt.date
             df = df[(df_date >= start_date) & (df_date <= end_date)].copy()
             
             print(f"✅ Loaded {len(df)} rows (filtered from {total_rows} total)")
-            print(f"   Date range in data: {df['date'].min().date()} to {df['date'].max().date()}")
+            if not df.empty:
+                print(f"   Date range in data: {df['date'].min()} to {df['date'].max()}")
             return df.reset_index(drop=True)
     
     # Download fresh data from Yahoo Finance

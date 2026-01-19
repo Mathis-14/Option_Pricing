@@ -24,9 +24,8 @@ ENV/
 .DS_Store
 Thumbs.db
 
-# Data (optional - uncomment if you don't want to commit data files)
-# data/
-# *.csv
+# Data - ignore CSV files but keep scripts
+data/*.csv
 
 # Environment variables
 .env
