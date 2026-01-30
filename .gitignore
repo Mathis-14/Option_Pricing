@@ -26,8 +26,3 @@ Thumbs.db
 
 # Data - ignore CSV files but keep scripts
 data/*.csv
-
-# Environment variables
-.env
-.env.local
-
