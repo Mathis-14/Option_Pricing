@@ -9,33 +9,49 @@ learn how to hedge properly.
 
 ## What's in here
 
-**`data/`** — Data import scripts
-- `import_options.py` — SPX options from Yahoo Finance
-- `import_stocks.py` — Stock prices (NVDA, GOOGL, AAPL)
-- `option_filtering.py` — Maturity filters
+**`NVIDIA_vol_s/`** — NVIDIA volatility surface construction
+- `import_data.py` — Refinitiv data import with RIC parsing for NVDA options
+  - Fetches real-time option chains via Refinitiv Data API
+  - Smart RIC parsing to extract Strike, Expiry, and Option Type
+  - Exports clean CSV with Implied Volatility, Bid/Ask, and metadata
 
-**`vol/`** — Volatility surface stuff
-- `iv_surface_spx.py` — SPX implied vol surface
-- `iv_2D.py` — Smile and term structure plots
-- `ImpliedVolatilitySurface.py` — 3D surface calculator
-
-**`option_basics/`** — Black-Scholes basics
+**`option_basics/`** — Black-Scholes fundamentals
 - `Call_Strike_Spot.py` / `Put_Strike_Spot.py` — Value decomposition plots
+- `option_basics.ipynb` — Core option pricing theory
+- `greeks.ipynb` — Greeks computation and analysis
+- `moneyness.ipynb` — Moneyness analysis
 
-**`options_strat/`** — Option strategies
+**`option_exotics/`** — Exotic options
+- `barrier_options.ipynb` — Barrier options (up-and-out, down-and-in, etc.)
+- `binary_options.ipynb` — Binary/digital options
+
+**`option_strat/`** — Option strategies
 - `option_strategies.py` — Payoff diagrams for spreads, straddles, butterflies, etc.
+- `spread.ipynb` — Spread strategies analysis
 
-**`hedging&greeks/`** — Hedging and greeks. Effect and sign of greeks in several situations.
+**`sample_portefolio/`** — Portfolio hedging
 - `hedge_portfolio.py` — Backtesting hedging strategies on real data
+
+**`legacy_vol_scripts/`** — Legacy volatility surface scripts
+- Historical SPX volatility surface implementations
 
 Check the notebooks for guided code and to see specifically what I'm learning and implementing.
 
 
 ## Tech Stack
 
-Python, pandas, numpy, scipy, matplotlib, plotly, yfinance
+Python, pandas, numpy, scipy, matplotlib, plotly, yfinance, refinitiv-data
 
-## Notes
+## Setup
 
-I take sometimes inspiration from my previous work in the repo "Project_Python_Data_Science" on predictions
-of gold log returns and use as a safe-haven.
+1. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+2. For Refinitiv data access, create a `.env` file:
+   ```bash
+   REFINITIV_API_KEY=your_api_key_here
+   ```
+
+
