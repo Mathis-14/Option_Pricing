@@ -8,6 +8,7 @@ env/
 venv/
 ENV/
 .venv
+.env
 
 # Jupyter Notebook
 .ipynb_checkpoints
@@ -26,3 +27,4 @@ Thumbs.db
 
 # Data - ignore CSV files but keep scripts
 data/*.csv
+surface_vol_equity/refinitiv_data/
