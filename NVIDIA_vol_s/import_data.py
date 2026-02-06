@@ -28,6 +28,8 @@ def parse_option_ric(ric):
         day_str = details[-9:-7]
         month_code = details[-10]
         
+        # Strike parsing: RIC strike encoding is ambiguous
+        # This is a fallback - prefer API-returned Strike Price when available
         strike = float(strike_str) / 100.0 if strike_str.isdigit() else None
         year = int("20" + year_str) if year_str.isdigit() else None
         day = int(day_str) if day_str.isdigit() else None
