@@ -8,3 +8,4 @@ scipy<1.16.0
 python-dotenv
 ipywidgets
 ipykernel
+seaborn
