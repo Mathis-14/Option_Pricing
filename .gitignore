@@ -29,3 +29,5 @@ Thumbs.db
 data/*.csv
 surface_vol_equity/refinitiv_data/
 NVIDIA_vol_s/refinitiv_data/
+cross_gamma/refinitiv_data/
+cross_gamma/README.md
