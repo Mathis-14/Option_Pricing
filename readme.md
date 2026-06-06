@@ -1,4 +1,4 @@
-# Option Pricing : Quant finance project — options pricing, volatility surfaces, delta hedging
+# option-lab : Quant finance project — options pricing, volatility surfaces, delta hedging
 
 Personal project to learn options theory and implement what I study.
 The objective is to master the code behind the theory.
